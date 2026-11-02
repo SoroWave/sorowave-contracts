@@ -11,4 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add wasm32v1-none
       - run: cargo check --locked
+      - run: cargo check --target wasm32v1-none --locked

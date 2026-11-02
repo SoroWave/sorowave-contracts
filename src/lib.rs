@@ -6,11 +6,15 @@ const TTL_THRESHOLD: u32 = 100_000;
 const TTL_EXTEND_TO: u32 = 5_000_000;
 
 fn extend_instance_ttl(env: &Env) {
-    env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
 fn extend_persistent_ttl(env: &Env, key: &DataKey) {
-    env.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
 #[contracttype]
@@ -23,6 +27,13 @@ pub struct WavePool {
     pub remaining_points: u64,
     pub finalized: bool,
     pub cancelled: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationAward {
+    pub contributor: Address,
+    pub points: u64,
 }
 
 #[contractevent]
@@ -43,6 +54,17 @@ pub struct WaveCreated {
 pub struct PointsAwarded {
     #[topic]
     wave_id: u64,
+    #[topic]
+    contributor: Address,
+    points: u64,
+}
+
+#[contractevent]
+pub struct ApplicationPointsAwarded {
+    #[topic]
+    wave_id: u64,
+    #[topic]
+    application_id: soroban_sdk::String,
     #[topic]
     contributor: Address,
     points: u64,
@@ -78,6 +100,7 @@ enum DataKey {
     Token,
     Wave(u64),
     Points(u64, Address),
+    ApplicationAward(u64, soroban_sdk::String),
     Claimed(u64, Address),
 }
 
@@ -93,9 +116,15 @@ impl SoroWavePool {
         }
         admin.require_auth();
         env.storage().instance().set(&key, &admin);
-        env.storage().instance().set(&DataKey::Token, &token_address);
+        env.storage()
+            .instance()
+            .set(&DataKey::Token, &token_address);
         extend_instance_ttl(&env);
-        Initialized { admin, token_address }.publish(&env);
+        Initialized {
+            admin,
+            token_address,
+        }
+        .publish(&env);
     }
 
     /// Escrows the reward pool for one contribution cycle.
@@ -109,8 +138,16 @@ impl SoroWavePool {
         if env.storage().persistent().has(&key) {
             panic!("wave already exists");
         }
-        let token_address: Address = env.storage().instance().get(&DataKey::Token).expect("not initialized");
-        token::Client::new(&env, &token_address).transfer(&creator, &env.current_contract_address(), &amount);
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("not initialized");
+        token::Client::new(&env, &token_address).transfer(
+            &creator,
+            &env.current_contract_address(),
+            &amount,
+        );
         let pool = WavePool {
             creator: creator.clone(),
             initial_pool: amount,
@@ -127,37 +164,147 @@ impl SoroWavePool {
 
     /// Records points after a maintainer verifies completed work.
     pub fn award_points(env: Env, wave_id: u64, contributor: Address, points: u64) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
         extend_instance_ttl(&env);
         admin.require_auth();
         if points == 0 {
             panic!("points must be positive");
         }
         let wave_key = DataKey::Wave(wave_id);
-        let mut wave: WavePool = env.storage().persistent().get(&wave_key).expect("wave not found");
+        let mut wave: WavePool = env
+            .storage()
+            .persistent()
+            .get(&wave_key)
+            .expect("wave not found");
         extend_persistent_ttl(&env, &wave_key);
         if wave.finalized || wave.cancelled {
             panic!("wave is closed");
         }
         let points_key = DataKey::Points(wave_id, contributor.clone());
         let current: u64 = env.storage().persistent().get(&points_key).unwrap_or(0);
-        let updated_contributor_points = current.checked_add(points).expect("contributor points overflow");
-        wave.total_points = wave.total_points.checked_add(points).expect("wave points overflow");
-        wave.remaining_points = wave.remaining_points.checked_add(points).expect("remaining points overflow");
-        env.storage().persistent().set(&points_key, &updated_contributor_points);
+        let updated_contributor_points = current
+            .checked_add(points)
+            .expect("contributor points overflow");
+        wave.total_points = wave
+            .total_points
+            .checked_add(points)
+            .expect("wave points overflow");
+        wave.remaining_points = wave
+            .remaining_points
+            .checked_add(points)
+            .expect("remaining points overflow");
+        env.storage()
+            .persistent()
+            .set(&points_key, &updated_contributor_points);
         extend_persistent_ttl(&env, &points_key);
         env.storage().persistent().set(&wave_key, &wave);
         extend_persistent_ttl(&env, &wave_key);
-        PointsAwarded { wave_id, contributor, points }.publish(&env);
+        PointsAwarded {
+            wave_id,
+            contributor,
+            points,
+        }
+        .publish(&env);
+    }
+
+    /// Records a reviewed application's points once. Repeating an identical
+    /// award is safe; reusing its id for different points or a different
+    /// contributor is rejected.
+    pub fn award_application_points(
+        env: Env,
+        wave_id: u64,
+        application_id: soroban_sdk::String,
+        contributor: Address,
+        points: u64,
+    ) -> bool {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        extend_instance_ttl(&env);
+        admin.require_auth();
+        if application_id.is_empty() || points == 0 {
+            panic!("application id and positive points are required");
+        }
+        let award_key = DataKey::ApplicationAward(wave_id, application_id.clone());
+        if let Some(previous) = env
+            .storage()
+            .persistent()
+            .get::<_, ApplicationAward>(&award_key)
+        {
+            if previous.contributor == contributor && previous.points == points {
+                extend_persistent_ttl(&env, &award_key);
+                return false;
+            }
+            panic!("application award conflicts with its prior award");
+        }
+        let wave_key = DataKey::Wave(wave_id);
+        let mut wave: WavePool = env
+            .storage()
+            .persistent()
+            .get(&wave_key)
+            .expect("wave not found");
+        extend_persistent_ttl(&env, &wave_key);
+        if wave.finalized || wave.cancelled {
+            panic!("wave is closed");
+        }
+        let points_key = DataKey::Points(wave_id, contributor.clone());
+        let current: u64 = env.storage().persistent().get(&points_key).unwrap_or(0);
+        let updated_contributor_points = current
+            .checked_add(points)
+            .expect("contributor points overflow");
+        wave.total_points = wave
+            .total_points
+            .checked_add(points)
+            .expect("wave points overflow");
+        wave.remaining_points = wave
+            .remaining_points
+            .checked_add(points)
+            .expect("remaining points overflow");
+        env.storage()
+            .persistent()
+            .set(&points_key, &updated_contributor_points);
+        extend_persistent_ttl(&env, &points_key);
+        env.storage().persistent().set(&wave_key, &wave);
+        extend_persistent_ttl(&env, &wave_key);
+        env.storage().persistent().set(
+            &award_key,
+            &ApplicationAward {
+                contributor: contributor.clone(),
+                points,
+            },
+        );
+        extend_persistent_ttl(&env, &award_key);
+        ApplicationPointsAwarded {
+            wave_id,
+            application_id,
+            contributor,
+            points,
+        }
+        .publish(&env);
+        true
     }
 
     /// Locks the points total so contributors can claim their pro-rata share.
     pub fn finalize_wave(env: Env, wave_id: u64) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
         extend_instance_ttl(&env);
         admin.require_auth();
         let key = DataKey::Wave(wave_id);
-        let mut wave: WavePool = env.storage().persistent().get(&key).expect("wave not found");
+        let mut wave: WavePool = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("wave not found");
         extend_persistent_ttl(&env, &key);
         if wave.cancelled || wave.finalized {
             panic!("wave is closed");
@@ -168,7 +315,11 @@ impl SoroWavePool {
         wave.finalized = true;
         env.storage().persistent().set(&key, &wave);
         extend_persistent_ttl(&env, &key);
-        WaveFinalized { wave_id, total_points: wave.total_points }.publish(&env);
+        WaveFinalized {
+            wave_id,
+            total_points: wave.total_points,
+        }
+        .publish(&env);
     }
 
     /// Pays a contributor a pro-rata share of the remaining pool.
@@ -177,7 +328,11 @@ impl SoroWavePool {
         contributor.require_auth();
         extend_instance_ttl(&env);
         let wave_key = DataKey::Wave(wave_id);
-        let mut wave: WavePool = env.storage().persistent().get(&wave_key).expect("wave not found");
+        let mut wave: WavePool = env
+            .storage()
+            .persistent()
+            .get(&wave_key)
+            .expect("wave not found");
         extend_persistent_ttl(&env, &wave_key);
         if !wave.finalized || wave.cancelled {
             panic!("wave is not claimable");
@@ -197,7 +352,10 @@ impl SoroWavePool {
         let payout = if points == wave.remaining_points {
             wave.remaining_pool
         } else {
-            wave.remaining_pool.checked_mul(points as i128).expect("payout overflow") / wave.remaining_points as i128
+            wave.remaining_pool
+                .checked_mul(points as i128)
+                .expect("payout overflow")
+                / wave.remaining_points as i128
         };
         wave.remaining_pool -= payout;
         wave.remaining_points -= points;
@@ -206,17 +364,34 @@ impl SoroWavePool {
         env.storage().persistent().set(&wave_key, &wave);
         extend_persistent_ttl(&env, &wave_key);
         if payout > 0 {
-            let token_address: Address = env.storage().instance().get(&DataKey::Token).expect("not initialized");
-            token::Client::new(&env, &token_address).transfer(&env.current_contract_address(), &contributor, &payout);
+            let token_address: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Token)
+                .expect("not initialized");
+            token::Client::new(&env, &token_address).transfer(
+                &env.current_contract_address(),
+                &contributor,
+                &payout,
+            );
         }
-        RewardClaimed { wave_id, contributor, payout }.publish(&env);
+        RewardClaimed {
+            wave_id,
+            contributor,
+            payout,
+        }
+        .publish(&env);
         payout
     }
 
     /// Returns the unused pool only when no points have been awarded.
     pub fn cancel_wave(env: Env, wave_id: u64) {
         let key = DataKey::Wave(wave_id);
-        let mut wave: WavePool = env.storage().persistent().get(&key).expect("wave not found");
+        let mut wave: WavePool = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("wave not found");
         extend_persistent_ttl(&env, &key);
         wave.creator.require_auth();
         if wave.finalized || wave.cancelled || wave.total_points > 0 {
@@ -228,8 +403,16 @@ impl SoroWavePool {
         env.storage().persistent().set(&key, &wave);
         extend_persistent_ttl(&env, &key);
         extend_instance_ttl(&env);
-        let token_address: Address = env.storage().instance().get(&DataKey::Token).expect("not initialized");
-        token::Client::new(&env, &token_address).transfer(&env.current_contract_address(), &wave.creator, &amount);
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("not initialized");
+        token::Client::new(&env, &token_address).transfer(
+            &env.current_contract_address(),
+            &wave.creator,
+            &amount,
+        );
         WaveCancelled { wave_id, amount }.publish(&env);
     }
 
