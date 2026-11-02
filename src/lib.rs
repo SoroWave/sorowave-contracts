@@ -16,11 +16,13 @@ pub struct SoroWaveEscrow;
 #[contractimpl]
 impl SoroWaveEscrow {
     pub fn initialize(env: Env, admin: Address, token_address: Address) {
+        admin.require_auth();
         if env.storage().instance().has(&Symbol::new(&env, "admin")) {
             panic!("already initialized");
         }
         env.storage().instance().set(&Symbol::new(&env, "admin"), &admin);
         env.storage().instance().set(&Symbol::new(&env, "token"), &token_address);
+        env.events().publish((Symbol::new(&env, "initialized"),), (admin, token_address));
     }
 
     pub fn create_bounty(env: Env, creator: Address, bounty_id: u64, amount: i128) {
@@ -31,6 +33,12 @@ impl SoroWaveEscrow {
         let token_address: Address = env.storage().instance().get(&Symbol::new(&env, "token")).expect("not initialized");
         token::Client::new(&env, &token_address).transfer(&creator, &env.current_contract_address(), &amount);
         env.storage().persistent().set(&key, &Bounty {creator, amount, open:true});
+        env.events().publish((Symbol::new(&env, "bounty_created"), bounty_id), amount);
+    }
+
+    pub fn get_bounty(env: Env, bounty_id: u64) -> Option<Bounty> {
+        let key = (Symbol::new(&env, "bounty"), bounty_id);
+        env.storage().persistent().get(&key)
     }
 
     pub fn release(env: Env, bounty_id: u64, contributor: Address) {
@@ -42,6 +50,7 @@ impl SoroWaveEscrow {
         env.storage().persistent().set(&key, &bounty);
         let token_address: Address = env.storage().instance().get(&Symbol::new(&env, "token")).expect("not initialized");
         token::Client::new(&env, &token_address).transfer(&env.current_contract_address(), &contributor, &bounty.amount);
+        env.events().publish((Symbol::new(&env, "bounty_released"), bounty_id), (contributor, bounty.amount));
     }
 
     pub fn cancel(env: Env, bounty_id: u64) {
@@ -53,5 +62,6 @@ impl SoroWaveEscrow {
         env.storage().persistent().set(&key, &bounty);
         let token_address: Address = env.storage().instance().get(&Symbol::new(&env, "token")).expect("not initialized");
         token::Client::new(&env, &token_address).transfer(&env.current_contract_address(), &bounty.creator, &bounty.amount);
+        env.events().publish((Symbol::new(&env, "bounty_cancelled"), bounty_id), (bounty.creator, bounty.amount));
     }
 }
