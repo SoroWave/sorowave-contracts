@@ -239,6 +239,15 @@ impl SoroWavePool {
         {
             if previous.contributor == contributor && previous.points == points {
                 extend_persistent_ttl(&env, &award_key);
+                // Re-emit proof so the API can validate a safe retry after the
+                // award succeeded but the previous API update failed.
+                ApplicationPointsAwarded {
+                    wave_id,
+                    application_id,
+                    contributor,
+                    points,
+                }
+                .publish(&env);
                 return false;
             }
             panic!("application award conflicts with its prior award");
