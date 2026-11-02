@@ -1,16 +1,18 @@
 # SoroWave Contracts
 
-Soroban contract prototype for holding a Stellar token bounty until a maintainer approves a contribution. This repository is experimental and unaudited. Use testnet only; do not deposit real funds.
+Soroban contract prototype for escrowing a shared token pool, recording contributor points, finalizing a cycle, and allowing contributors to claim pro-rata rewards. Experimental and unaudited. Use testnet only; do not deposit real funds.
 
 ## Contract actions
 
 - Initialize an administrator and the token contract once.
-- Read a bounty by its numeric identifier.
-- Create a bounty by transferring tokens into escrow.
-- Release a funded bounty to a contributor after the maintainer approves the work.
-- Cancel a bounty and return its funds to its creator.
+- Create a wave pool by transferring tokens into escrow.
+- Record points for completed contributions with administrator authorization.
+- Finalize the cycle after points are settled.
+- Let each contributor claim their proportional share after finalization.
+- Cancel and refund a pool only if no points have been awarded.
+- Read pool totals, point totals, and claim status.
 
-Initialization requires the administrator's authorization. The contract publishes lifecycle events. The contract is intentionally a small starting point and is unaudited. Before production, add comprehensive authorization and edge-case tests, review token semantics, define dispute handling, and get an independent security review.
+Payouts use integer division. Rounding remainder stays in the pool and is carried forward to later claimants; the final points claimant receives the remaining pool amount. Initialization, point awards, and finalization require admin authorization; claims require contributor authorization. The contract publishes lifecycle events and extends instance and persistent-entry TTLs when used. It is unaudited and not connected to the app/API preview. Before production, add accounting and authorization tests, define dispute handling, and get an independent security review.
 
 ## Build
 
@@ -18,4 +20,4 @@ Install the Stellar CLI and Rust WebAssembly target, then run `stellar contract 
 
 ## Testnet deployment outline
 
-Create a disposable testnet identity, build and deploy with the Stellar CLI, then initialize the deployed contract with the administrator and a testnet token contract address. Record the deployed Soroban contract ID and token contract ID in `sorowave-api/.env` as `SOROWAVE_CONTRACT_ID` and `SOROWAVE_TOKEN_CONTRACT_ID`. Keep the identity secret out of the repositories and do not use a production key. No deployment is included in this starter because deployment and initialization require a funded testnet identity and explicit operator action. See the [Stellar CLI contract commands](https://developers.stellar.org/docs/tools/cli/stellar-cli).
+Create a disposable testnet identity, build and deploy with the Stellar CLI, then initialize the deployed contract with the administrator and a testnet token contract address. Record the deployed Soroban contract ID and token contract ID in `sorowave-api/.env` as `SOROWAVE_CONTRACT_ID` and `SOROWAVE_TOKEN_CONTRACT_ID`. Keep the identity secret out of the repositories and do not use a production key. No deployment is included because deployment and initialization require a funded testnet identity and explicit operator action. The API currently records preview points off-chain; it does not invoke this contract. See the [Stellar CLI contract commands](https://developers.stellar.org/docs/tools/cli/stellar-cli).
